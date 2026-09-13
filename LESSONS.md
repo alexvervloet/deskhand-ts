@@ -144,3 +144,41 @@ Worth recording as the counterexample to the rest of this file: when a boundary
 is genuinely just JSON, crossing a language costs nothing. All the expensive
 parts of this port were where a library had been doing something on the
 original's behalf.
+
+## 8. The eval harness was the half that made the port worth linking
+
+The first pass at this port shipped the service, the runtime, the UI and 250
+tests, and skipped `evals/` on the grounds that it measures quality rather than
+being part of the service. That reasoning was fine and the conclusion was
+wrong, for a reason that has nothing to do with code: a portfolio repo is read
+by someone who will not open a second repo to find the interesting part.
+
+The evals are the interesting part. The tests prove the plumbing holds; the
+evals prove the *agent's sequence of actions* held across a crash, a denial and
+an injected instruction. Those are different claims and only one of them is
+what the project is about.
+
+**What to do differently:** when porting for an audience rather than for a
+deployment, scope by what the audience has to be able to see in one place, not
+by what the service needs to run.
+
+## 9. Reproducing a claim beats restating it
+
+The Python README says removing the approval check fails 15 of 32 evals and
+removing the fence fails 3. The cheap move is to copy those sentences into this
+README, since it is the same eval suite.
+
+Running the experiment against this port instead took four commands: patch
+`requiresApproval` to return false, run the evals, revert, do the same to
+`quarantine`. Both numbers came back identical — 15 and 3.
+
+Worth the four commands for two reasons. It is now this repo's measurement
+rather than a claim inherited from another one, and had the numbers *differed*
+it would have meant the port had a hole the 250 unit tests did not find. A
+restated number cannot fail; a reproduced one can.
+
+The 3 is the more interesting figure either way. With the fence deleted the
+injected instruction reaches the model as narration and twenty-nine evals still
+pass, because the gate does not care what the model was persuaded of. That is
+defence in depth showing up as a *small* number, which is the opposite of how
+it usually reads.
