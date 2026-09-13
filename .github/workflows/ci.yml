@@ -51,6 +51,41 @@ jobs:
         # default. `DESKHAND_FUZZ_EXAMPLES=500 npm test` runs it.
         run: npm test
 
+  # The trajectory evals are a separate gate from the unit tests, and they are a
+  # gate: a change that reintroduces a double refund, drops the fence, or lets a
+  # run go unbounded fails the build here rather than in review.
+  evals:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: deskhand
+          POSTGRES_PASSWORD: deskhand
+          POSTGRES_DB: deskhand
+        ports:
+          - 5438:5432
+        options: >-
+          --health-cmd "pg_isready -U deskhand -d deskhand"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      DATABASE_URL: postgresql://deskhand:deskhand@localhost:5438/deskhand
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run migrate
+      - name: Trajectory evals
+        run: npm run evals
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

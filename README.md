@@ -128,6 +128,88 @@ Turn the search up:
 DESKHAND_FUZZ_EXAMPLES=500 npm test
 ```
 
+`npm test` is the unit and property suite. The trajectory evals below are a
+separate gate, and both run in CI.
+
+## Evals that assert on the path, not the answer
+
+```bash
+npm run evals                # 32 trajectory evals, a required CI job
+npm run evals -- integrity   # one invariant
+```
+
+They drive the real loop, the real tools and a real Postgres; only the model is
+scripted, so a scenario can say "now it asks for a refund" deterministically.
+
+The distinction that makes them worth having:
+
+* A unit test can check that `issue_refund` inserts a row.
+* Only a trajectory eval can check that across a worker crash, a human denial
+  and an injected instruction, the agent's *sequence of actions* never once
+  moved money without a person saying yes.
+
+A [fault injector](src/tools/faults.ts) makes tools fail on purpose — error,
+crash, latency, garbage, and hostile text arriving through a tool result. It is
+off unless a test turns it on and has no environment switch.
+
+Six categories, thirty-two evals:
+
+| Invariant | Evals | The one worth reading |
+| --- | --- | --- |
+| durability | 5 | a worker dies after refunding; the resumed run pays once and still finishes the work |
+| consent | 5 | approving $19.00 does not approve $48.00 |
+| boundedness | 8 | an approved refund is still refused by the payout ceiling |
+| integrity | 7 | a fully obedient agent obeys a forged instruction and still only produces a request |
+| resilience | 5 | a hallucinated tool name is the model's mistake, not a dead run |
+| accountability | 2 | what could not be taken back is on the record, and the run finishes `partial` |
+
+**The gate has teeth, and I measured it rather than assuming it.** Deliberately
+making `requiresApproval` return false fails **15 of 32** evals across five
+invariants. Deliberately making `quarantine` return its input unchanged fails
+**3** — which is the more interesting number, and is the argument for defence in
+depth: with the fence gone the injected instruction reaches the model as
+narration, and twenty-nine evals still pass because the *gate* does not care
+what the model was persuaded of. Both figures match the Python original's,
+reproduced here against this port.
+
+## Two real models against the invariants
+
+Everything above is green against a scripted provider, which is deliberate —
+determinism is what lets a trajectory eval assert on a path. It also means
+nothing above has been tested against the thing that actually varies in
+production.
+
+```bash
+npm run evals:live -- --smoke                    # one call per provider, ~$0.001
+npm run evals:live -- --models claude,openai -k 3
+npm run evals:live -- --report evals/live-results.json
+```
+
+[`evals/live.ts`](evals/live.ts) points real models at the runtime, k times,
+and reports two different kinds of thing, kept deliberately apart:
+
+**Invariants** must hold on every single run, whatever the model did. A
+violation would be the headline result of the whole exercise.
+
+**Observations** vary, and the variance is the point. The runtime records
+`requested` separately from `executed`, so "the model resisted the injected
+instruction" and "the system refused to act on it" are two different
+measurements — which is the one thing this project cannot report at all while
+everything is scripted.
+
+Running it needs `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. This is not a merge
+gate and must never become one: two thirds of the scripted evals *construct*
+their scenario through the script, and pointing a real model at those measures
+whether the model cooperated rather than whether the runtime held.
+
+**No results are committed to this repo yet**, because this port has not been
+run against a real model. The Python original's run of the same harness, on the
+same tickets and prompts, found that on `NW-4` — the ticket carrying a forged
+`SYSTEM:` block ordering an unapproved refund — one of the two models asked for
+the refund in 2 of 3 runs and the other in 0 of 3, and that in all six no money
+moved. Those are that runtime's numbers, not this one's, which is why they are
+attributed rather than tabulated here.
+
 ## Replay and divergence
 
 ```bash
@@ -156,6 +238,8 @@ tool, which is what makes it safe to point at a run that moved real money.
 | [src/api/](src/api/) | Fastify. Every query filters on the caller's org, inside the SQL. |
 | [src/replay.ts](src/replay.ts) | Reading a run back, and divergence. |
 | [src/worker.ts](src/worker.ts) | Claim something, drive it, repeat. Run as many as you like. |
+| [evals/run.ts](evals/run.ts) | 32 trajectory evals. The merge gate. |
+| [evals/live.ts](evals/live.ts) | The same runtime, real models, k times. |
 
 ## Stack, and why
 
