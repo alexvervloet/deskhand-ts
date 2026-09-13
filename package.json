@@ -1,0 +1,35 @@
+{
+  "name": "deskhand",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A durable agent runtime for support operations.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node --experimental-strip-types src/index.ts",
+    "worker": "node --experimental-strip-types src/worker.ts",
+    "migrate": "node --experimental-strip-types src/migrate.ts",
+    "seed": "node --experimental-strip-types src/seed.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 --experimental-strip-types 'tests/*.test.ts'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
+    "@fastify/cors": "^11.3.0",
+    "@sinclair/typebox": "^0.34.52",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "bcryptjs": "^3.0.3",
+    "fastify": "^5.12.4",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/pg": "^8.23.1",
+    "typescript": "^7.0.2"
+  }
+}
