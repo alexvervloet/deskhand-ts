@@ -175,10 +175,13 @@ export interface ApiToolSchema {
 
 const ajv = new Ajv({ allErrors: false, strict: false });
 
-const registry = new Map<string, ToolDef>();
+// `Readonly` so the risk class cannot be reassigned by the type system either.
+// `Object.freeze` in `register` is what stops it at runtime; this is what stops
+// it at compile time, and the guarantee wants both.
+const registry = new Map<string, Readonly<ToolDef>>();
 const validators = new Map<string, ValidateFunction>();
 
-export function register(tool: ToolDef): ToolDef {
+export function register(tool: ToolDef): Readonly<ToolDef> {
   if (registry.has(tool.name)) {
     throw new Error(`tool ${JSON.stringify(tool.name)} is already registered`);
   }
@@ -212,7 +215,7 @@ export function register(tool: ToolDef): ToolDef {
   return frozen;
 }
 
-export function get(name: string): ToolDef {
+export function get(name: string): Readonly<ToolDef> {
   const tool = registry.get(name);
   if (tool === undefined) throw new ToolError(`no such tool: ${JSON.stringify(name)}`);
   return tool;
@@ -242,11 +245,11 @@ export function validate(name: string, args: ToolArgs): void {
   }
 }
 
-export function allTools(): ToolDef[] {
+export function allTools(): Readonly<ToolDef>[] {
   return [...registry.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-export function apiSchema(tool: ToolDef): ApiToolSchema {
+export function apiSchema(tool: Readonly<ToolDef>): ApiToolSchema {
   return {
     name: tool.name,
     description: tool.description,
