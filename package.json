@@ -15,7 +15,8 @@
     "migrate": "node --experimental-strip-types src/migrate.ts",
     "seed": "node --experimental-strip-types src/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-concurrency=1 --experimental-strip-types 'tests/*.test.ts'"
+    "test": "node --test --test-concurrency=1 --experimental-strip-types 'tests/*.test.ts'",
+    "replay": "node --experimental-strip-types src/replay.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
