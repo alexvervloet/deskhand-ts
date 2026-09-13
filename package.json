@@ -16,7 +16,9 @@
     "seed": "node --experimental-strip-types src/seed.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test --test-concurrency=1 --test-reporter=spec --experimental-strip-types tests/*.test.ts",
-    "replay": "node --experimental-strip-types src/replay.ts"
+    "replay": "node --experimental-strip-types src/replay.ts",
+    "evals": "node --experimental-strip-types evals/run.ts",
+    "evals:live": "node --experimental-strip-types evals/live.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.125.0",
