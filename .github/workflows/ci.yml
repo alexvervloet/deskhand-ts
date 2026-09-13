@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The suite runs against a real Postgres, because the runtime's whole
+    # subject is what the database guarantees under concurrency and crashes.
+    # There is nothing here a fake could stand in for.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: deskhand
+          POSTGRES_PASSWORD: deskhand
+          POSTGRES_DB: deskhand
+        ports:
+          - 5438:5432
+        options: >-
+          --health-cmd "pg_isready -U deskhand -d deskhand"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      DATABASE_URL: postgresql://deskhand:deskhand@localhost:5438/deskhand
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Migrate
+        run: npm run migrate
+
+      - name: Test
+        # A modest search by default; the deep sweep is a command, not a
+        # default. `DESKHAND_FUZZ_EXAMPLES=500 npm test` runs it.
+        run: npm test
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
