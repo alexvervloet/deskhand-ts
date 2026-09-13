@@ -11,10 +11,17 @@ import type pg from "pg";
 import { all, closePool, fetchOne, one, pool, transaction, withClient, type Row } from "../src/db.ts";
 import { run as migrate } from "../src/migrate.ts";
 import { seed } from "../src/seed.ts";
+import { setSink } from "../src/tracing.ts";
 import * as loop from "../src/runtime/loop.ts";
 import * as runs from "../src/runtime/runs.ts";
 import type { Provider } from "../src/providers.ts";
 import "../src/tools/index.ts";
+
+// The event stream is a product feature and a test-output disaster: a crash
+// sweep emits thousands of lines and buries the assertion that failed. Silenced
+// unless asked for. tests/tracing.test.ts installs its own sink, so the thing
+// that actually asserts on these lines is unaffected.
+if (process.env["DESKHAND_TRACE"] !== "1") setSink(() => {});
 
 let schemaReady = false;
 
