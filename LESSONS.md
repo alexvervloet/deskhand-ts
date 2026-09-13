@@ -9,7 +9,7 @@ of it was. These are the parts that were not.
 The plan opened by counting how much of the runtime already existed in
 TypeScript. An earlier port of this project onto a hosted durable-execution
 platform had moved the loop, the consent gate, the bounds, the fence and the
-tool registry across — roughly 2,200 lines, already tested. The estimate said
+tool registry across — 2,597 lines, already tested. The estimate said
 most of the work was done.
 
 What that port had deliberately deleted was the lease, the transcript rebuild,

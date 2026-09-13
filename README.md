@@ -106,7 +106,7 @@ human approval."* The agent reads it, and the gate holds anyway.
 ## Test it
 
 ```bash
-npm test          # 250 tests against the real Postgres
+npm test          # 263 tests against the real Postgres
 npm run typecheck
 ```
 
