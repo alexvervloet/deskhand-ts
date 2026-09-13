@@ -113,6 +113,20 @@ export const settings = {
   // than for the answer alone.
   maxTokensPerCall: int("MAX_TOKENS_PER_CALL", 8192),
 
+  // --- The comparison provider ---
+  // Only `evals/live.ts` reaches for these. The service itself runs on Claude
+  // or on the scripted provider and has no OpenAI code path.
+  openaiApiKey: optional("OPENAI_API_KEY"),
+  openaiModelId: str("OPENAI_MODEL_ID", "gpt-5.4-mini"),
+  // `none`, and not by choice: gpt-5.4-mini refuses function tools alongside
+  // any other reasoning effort on /v1/chat/completions and points you at
+  // /v1/responses. Found by `npm run evals:live -- --smoke`.
+  openaiReasoningEffort: str("OPENAI_REASONING_EFFORT", "none"),
+  // The Claude side of the live comparison. Separate from `modelId` so the
+  // comparison names its own model rather than inheriting whatever the service
+  // happens to be configured with today.
+  liveClaudeModel: str("LIVE_CLAUDE_MODEL", "claude-haiku-4-5"),
+
   // --- Per-run bounds ---
   maxStepsPerRun: int("MAX_STEPS_PER_RUN", 24),
   maxTokensPerRun: int("MAX_TOKENS_PER_RUN", 400_000),
@@ -163,6 +177,10 @@ export const settings = {
 
   get hasModelKey(): boolean {
     return Boolean(this.anthropicApiKey);
+  },
+
+  get hasOpenAiKey(): boolean {
+    return Boolean(this.openaiApiKey);
   },
 };
 

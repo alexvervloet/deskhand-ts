@@ -27,6 +27,7 @@
     "ajv-formats": "^3.0.1",
     "bcryptjs": "^3.0.3",
     "fastify": "^5.12.4",
+    "openai": "^7.15.0",
     "pg": "^8.23.0"
   },
   "devDependencies": {

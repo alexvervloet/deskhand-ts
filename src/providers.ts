@@ -177,6 +177,238 @@ function stripNulls(block: Record<string, unknown>): ContentBlock {
   return out as ContentBlock;
 }
 
+// --------------------------------------------------------------------- OpenAI
+
+/**
+ * A second model behind the same `Provider` interface, for comparison.
+ *
+ * **The seam was never neutral.** `transcript.rebuild` emits Anthropic content
+ * blocks, `steps.content` stores them, the loop reads `type === "tool_use"` out
+ * of them, and `ModelReply.content` is replayed verbatim. That is a reasonable
+ * thing for a project that runs on one provider, and it means "swap the
+ * provider" is really "write an adapter". This class is the adapter, and
+ * everything it does is translation:
+ *
+ *     Anthropic messages      ->  Chat Completions messages   (`toOpenAI`)
+ *     Chat Completions reply  ->  Anthropic content blocks    (`toBlocks`)
+ *
+ * Nothing downstream can tell. The step log, the approval gate, the ledger and
+ * the replay view all see the shape they have always seen.
+ *
+ * Two differences from `ClaudeProvider` that are deliberate, and are stated in
+ * the README rather than smoothed over:
+ *
+ * * **No `strict`.** Anthropic and OpenAI accept different subsets of JSON
+ *   Schema in strict mode, and `apiSafe` in tools/base.ts strips for
+ *   Anthropic's. Sending that to OpenAI is a coin flip on a 400. The
+ *   constraints are not lost — `validate` runs the full schema locally before
+ *   anything executes, which is the path a bad argument was always meant to
+ *   take. It does mean invalid-argument counts are not comparable between the
+ *   two providers.
+ * * **No cached-token accounting.** OpenAI reports cached input, but `Rate`
+ *   models Anthropic's cache economics (a tenth to read, 1.25x to write) and
+ *   OpenAI does not charge to write. Rather than report a number computed with
+ *   the wrong ratio, this reports zero and the comparison quotes billed input.
+ */
+export class OpenAIProvider implements Provider {
+  readonly name = "openai";
+  readonly model: string;
+  readonly effort: string;
+  #client: any = null;
+
+  constructor(model?: string, effort?: string) {
+    this.model = model ?? settings.openaiModelId;
+    // `none`. Not a cost decision — a hard constraint, and one that only a real
+    // call surfaces: gpt-5.4-mini refuses function tools together with any
+    // other reasoning effort on /v1/chat/completions and tells you to use
+    // /v1/responses instead. It happens to make the comparison cleaner, because
+    // the Claude side of it runs a model with no thinking either.
+    this.effort = effort ?? settings.openaiReasoningEffort;
+  }
+
+  async #openai(): Promise<any> {
+    if (this.#client === null) {
+      const { default: OpenAI } = await import("openai");
+      this.#client = new OpenAI({ apiKey: settings.openaiApiKey ?? undefined });
+    }
+    return this.#client;
+  }
+
+  async complete(system: string, messages: Message[], tools: unknown[]): Promise<ModelReply> {
+    const request: Record<string, unknown> = {
+      model: this.model,
+      messages: [{ role: "system", content: system }, ...toOpenAI(messages)],
+      tools: (tools as ApiToolShape[]).map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.input_schema,
+        },
+      })),
+      // Reasoning models bill thinking as output and cap it under this, not
+      // under the retired `max_tokens`.
+      max_completion_tokens: settings.maxTokensPerCall,
+      reasoning_effort: this.effort,
+    };
+
+    const client = await this.#openai();
+    const started = Date.now();
+    const response = await client.chat.completions.create(request);
+    const latencyMs = Date.now() - started;
+
+    const choice = response.choices[0];
+    const usage = response.usage ?? {};
+    const inputTokens = usage.prompt_tokens ?? 0;
+    const outputTokens = usage.completion_tokens ?? 0;
+
+    return {
+      content: toBlocks(choice.message),
+      stopReason: stopReasonFor(choice.finish_reason),
+      inputTokens,
+      outputTokens,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costMicros: costMicros(this.model, { inputTokens, outputTokens }),
+      provider: this.name,
+      model: this.model,
+      latencyMs,
+    };
+  }
+}
+
+interface ApiToolShape {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/**
+ * OpenAI's finish reasons, mapped onto the vocabulary the loop already reads.
+ * `content_filter` becomes `refusal` so it takes the path a safety decline
+ * takes — the run ends `model_refusal` rather than being read as an empty
+ * answer.
+ */
+const FINISH_REASONS: Record<string, string> = {
+  tool_calls: "tool_use",
+  stop: "end_turn",
+  length: "max_tokens",
+  content_filter: "refusal",
+};
+
+export function stopReasonFor(finishReason: string | null | undefined): string {
+  return FINISH_REASONS[finishReason ?? "stop"] ?? "end_turn";
+}
+
+/**
+ * Anthropic-shaped messages to Chat Completions messages.
+ *
+ * The shapes disagree in one structural way rather than many cosmetic ones.
+ * Anthropic puts tool results in a *user* message as `tool_result` blocks, and
+ * a turn that resolved three calls is one message with three blocks. Chat
+ * Completions wants one `role: "tool"` message per result. So a single message
+ * can fan out into several, and the order has to survive it: a tool message
+ * must follow the assistant message carrying the call it answers, or the API
+ * rejects the conversation.
+ */
+export function toOpenAI(messages: Message[]): Record<string, any>[] {
+  const out: Record<string, any>[] = [];
+
+  for (const message of messages) {
+    const content = message.content;
+    if (typeof content === "string") {
+      out.push({ role: message.role, content });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const text = content
+        .filter((b) => b["type"] === "text")
+        .map((b) => (b["text"] as string) ?? "")
+        .join("");
+      const calls = content
+        .filter((b) => b["type"] === "tool_use")
+        .map((b) => ({
+          id: b["id"],
+          type: "function",
+          function: { name: b["name"], arguments: JSON.stringify(b["input"] ?? {}) },
+        }));
+      // An assistant turn with neither text nor calls is not a legal message.
+      // It also cannot happen: the loop ends a run whose turn had no tool
+      // calls, so a turn that is still in the history had one.
+      const entry: Record<string, any> = { role: "assistant", content: text || null };
+      if (calls.length > 0) entry["tool_calls"] = calls;
+      out.push(entry);
+      continue;
+    }
+
+    // A user turn: tool results, or the opening prompt.
+    const textParts: string[] = [];
+    for (const block of content) {
+      if (block["type"] === "tool_result") {
+        let body = block["content"];
+        if (Array.isArray(body)) {
+          body = body
+            .filter((b: ContentBlock) => b["type"] === "text")
+            .map((b: ContentBlock) => (b["text"] as string) ?? "")
+            .join("");
+        }
+        out.push({
+          role: "tool",
+          tool_call_id: block["tool_use_id"],
+          // `is_error` has no home in this shape. The text already reads as a
+          // failure — it is the message a ToolError carried — so the model
+          // still sees what went wrong; it just is not flagged as structurally
+          // an error the way Anthropic flags it. Noted because it is a real
+          // difference in what the two models are shown.
+          content: String(body),
+        });
+      } else if (block["type"] === "text") {
+        textParts.push((block["text"] as string) ?? "");
+      }
+    }
+    if (textParts.length > 0) out.push({ role: "user", content: textParts.join("\n") });
+  }
+
+  return out;
+}
+
+/**
+ * A Chat Completions reply back into Anthropic content blocks.
+ *
+ * This is the half that has to be right, because whatever it returns is written
+ * into `steps.content` and every later read of that run — the resume, the
+ * replay, the compensation plan's step numbers — is a read of these blocks.
+ *
+ * `arguments` arrives as a JSON *string* and the model is not obliged to make
+ * it parse. A tool call whose arguments are not JSON is handed on with an empty
+ * input, which the schema then rejects, which the agent reads as a ToolError
+ * and can correct. That is the same route a well-formed but invalid argument
+ * takes, and it is a great deal better than an exception out of the provider
+ * taking down a run that may already have moved money.
+ */
+export function toBlocks(message: any): ContentBlock[] {
+  const blocks: ContentBlock[] = [];
+  if (message?.content) blocks.push({ type: "text", text: message.content });
+
+  for (const call of message?.tool_calls ?? []) {
+    let args: unknown;
+    try {
+      args = JSON.parse(call.function.arguments || "{}");
+    } catch {
+      args = {};
+    }
+    if (args === null || typeof args !== "object" || Array.isArray(args)) args = {};
+    blocks.push({
+      type: "tool_use",
+      id: call.id,
+      name: call.function.name,
+      input: args,
+    });
+  }
+  return blocks;
+}
+
 // -------------------------------------------------------------------- Scripted
 
 /**
