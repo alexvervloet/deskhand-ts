@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:17
+    container_name: deskhand-ts-pg
+    environment:
+      POSTGRES_USER: deskhand
+      POSTGRES_PASSWORD: deskhand
+      POSTGRES_DB: deskhand
+    # 5438, so this never fights the Python stack on 5437 or a local Postgres
+    # on 5432.
+    ports:
+      - "5438:5432"
+    volumes:
+      - deskhand-ts-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deskhand -d deskhand"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  deskhand-ts-pgdata:
