@@ -280,7 +280,7 @@ const ORDER_ITEM = /^\s*(\d+)x .*?\(([A-Z][\w-]*)\) @ ([\d,]+)\.(\d{2}) USD/gm;
  * agent asked to refund a customer who only wanted a tracking number. The
  * ticket is what the plan is about, so the plan reads the ticket and stops.
  */
-function brief(messages: Message[]): string {
+export function brief(messages: Message[]): string {
   const parts: string[] = [];
   let seenResult = false;
   for (const message of messages) {
@@ -325,7 +325,7 @@ function brief(messages: Message[]): string {
  * number nobody chose. That is the failure mode the constant this replaced did
  * not have, and having it is the point.
  */
-function refundable(messages: Message[]): number {
+export function refundable(messages: Message[]): number {
   const fromOrder = new Set<string>();
   for (const message of messages) {
     if (typeof message.content === "string") continue;
