@@ -1,0 +1,168 @@
+/**
+ * Rebuilding a run's conversation from its step log, and fencing what the model
+ * is allowed to trust.
+ *
+ * Nothing holds a run's messages in memory between steps. Every time a worker
+ * touches a run — the first time, and after another worker died mid-trajectory
+ * — the conversation is reconstructed here from rows. That is what makes a run
+ * portable between processes, and it is why `steps` is append-only: editing
+ * history would edit the past.
+ *
+ * This module is also the single place where tool output becomes model input,
+ * which makes it the right and only place to fence it.
+ */
+
+import { createHash } from "node:crypto";
+import { all, type Queryable } from "../db.ts";
+import type { ContentBlock, Message } from "../providers.ts";
+
+/**
+ * A per-run marker for the untrusted region.
+ *
+ * Derived from the run id rather than randomly generated, because replay has to
+ * produce byte-identical messages and a fresh nonce each time would defeat
+ * that. Derived rather than fixed, because a constant delimiter published in an
+ * open-source repository is one a customer can type into a ticket body and
+ * close early.
+ */
+export function fenceToken(runId: string): string {
+  return createHash("sha256").update(`deskhand-fence:${runId}`).digest("hex").slice(0, 12);
+}
+
+/**
+ * What a forged marker inside the body is replaced with. Deliberately contains
+ * no angle bracket, which is what makes one pass enough — see `quarantine`.
+ */
+export const STRIPPED_MARKER = "[fence marker stripped]";
+
+/**
+ * Wrap tool output as data.
+ *
+ * Two things happen here, and the second is the one that matters:
+ *
+ * 1. The output is delimited with a marker the model is told about in its
+ *    system prompt.
+ * 2. Any occurrence of that marker *inside* the output is neutralised first, so
+ *    content cannot close its own fence and continue as if it were the system
+ *    talking.
+ *
+ * Step 2 replaces rather than deletes, and that is a correctness requirement
+ * rather than a courtesy. Deleting joins the text on either side of the marker,
+ * and the join can spell the marker that was just removed:
+ *
+ *     body = "<<</untrusted:" + closer + token + ">>>"
+ *
+ * A single delete of `closer` there returns `closer`, so the body ends up
+ * closing the fence after all. Substituting a placeholder keeps the two halves
+ * apart, and because the placeholder contains no `<` or `>`, no marker can ever
+ * span it. That is why one pass is sufficient and there is no loop to run to a
+ * fixed point.
+ *
+ * Keeping the attempt visible is the other half. A forged marker is evidence
+ * that someone tried, and it belongs in the transcript, the run viewer, and the
+ * replay rather than being quietly erased.
+ *
+ * This does not make the content safe. A model can still be persuaded by text
+ * inside the fence. What it does is remove the *structural* ambiguity — the
+ * model can always tell where untrusted input begins and ends — and pair it
+ * with the guarantee that actually holds: nothing in here can change a tool's
+ * risk class, so the worst a persuasive ticket achieves is a refund request
+ * that a human is still asked to approve.
+ */
+export function quarantine(runId: string, body: string): string {
+  const token = fenceToken(runId);
+  const opener = `<<<untrusted:${token}>>>`;
+  const closer = `<<</untrusted:${token}>>>`;
+  const cleaned = body.replaceAll(opener, STRIPPED_MARKER).replaceAll(closer, STRIPPED_MARKER);
+  return `${opener}\n${cleaned}\n${closer}`;
+}
+
+/**
+ * Replay the step log into a messages array for the next model call.
+ *
+ * Consecutive tool results are gathered into a single user message. That is an
+ * API requirement when a turn asked for several tools at once, and getting it
+ * wrong is subtle: splitting them across messages does not error, it just
+ * quietly teaches the model to stop making parallel calls.
+ *
+ * `beforeSeq` truncates the replay, returning the conversation exactly as it
+ * stood *before* that step ran. This function is a pure function of the rows
+ * and the prompt — no clock, no randomness, no ambient state — which is what
+ * makes "what did the model see when it decided to refund?" a question with one
+ * reproducible answer, months later. See src/replay.ts.
+ *
+ * **`prompt` is the one message here that is not fenced**, which is only safe
+ * because of what `runs.create` is careful to put in it: the ticket's reference
+ * and nothing else the ticket contains. Every other byte in this array either
+ * came from the model or went through `quarantine`. If a future prompt grows a
+ * customer's words — a subject line, a name, a snippet "for context" — this is
+ * the line that lets them in as narration, and the fence below stops being a
+ * boundary the model can rely on.
+ */
+export async function rebuild(
+  db: Queryable,
+  runId: string,
+  prompt: string,
+  opts: { beforeSeq?: number | null } = {},
+): Promise<Message[]> {
+  const beforeSeq = opts.beforeSeq ?? null;
+  const steps = await all(
+    db,
+    `select seq, kind::text, content from steps
+      where run_id = $1 and ($2::int is null or seq < $2::int)
+      order by seq`,
+    [runId, beforeSeq],
+  );
+
+  const messages: Message[] = [{ role: "user", content: prompt }];
+  let pending: ContentBlock[] = [];
+
+  const flush = (): void => {
+    if (pending.length > 0) {
+      messages.push({ role: "user", content: pending });
+      pending = [];
+    }
+  };
+
+  for (const step of steps) {
+    const kind = step["kind"] as string;
+    const content = step["content"] as Record<string, any>;
+
+    if (kind === "model_call") {
+      flush();
+      messages.push({ role: "assistant", content: content["blocks"] as ContentBlock[] });
+    } else if (kind === "tool_result") {
+      pending.push({
+        type: "tool_result",
+        tool_use_id: content["tool_use_id"],
+        content: quarantine(runId, content["result"]),
+        is_error: !content["ok"],
+      });
+    } else if (kind === "approval") {
+      // A decision only reaches the model once it produces a result. A denial
+      // becomes the tool's result so the agent can adapt; an approval produces
+      // nothing here, because the tool call that follows is the visible
+      // consequence.
+      if (content["decision"] === "denied") {
+        pending.push({
+          type: "tool_result",
+          tool_use_id: content["tool_use_id"],
+          content: quarantine(
+            runId,
+            "A human reviewed this action and declined it." +
+              (content["reason"] ? ` Reason: ${content["reason"]}` : "") +
+              " Do not retry the same action. Either propose a different" +
+              " course, or explain what you would need in order to proceed.",
+          ),
+          is_error: true,
+        });
+      }
+    }
+
+    // 'final' and 'error' steps close a run; nothing follows them, so they
+    // contribute no message.
+  }
+
+  flush();
+  return messages;
+}
