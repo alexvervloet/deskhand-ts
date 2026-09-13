@@ -1,0 +1,42 @@
+import js from "@eslint/js";
+import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
+import reactRefresh from "eslint-plugin-react-refresh";
+import tseslint from "typescript-eslint";
+
+export default tseslint.config(
+  { ignores: ["dist", "node_modules"] },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    extends: [
+      js.configs.recommended,
+      // Type-aware, because the rules worth having here (floating promises,
+      // misused awaits) need the checker to say anything at all.
+      ...tseslint.configs.recommendedTypeChecked,
+      // Not configs["recommended-latest"], which is still the eslintrc shape
+      // in v7 and makes ESLint 10 reject the whole file.
+      reactHooks.configs.flat["recommended-latest"],
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.browser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    plugins: { "react-refresh": reactRefresh },
+    rules: {
+      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // tsc already reports unused locals and parameters, and two tools
+      // reporting the same line twice trains people to skim both.
+      "@typescript-eslint/no-unused-vars": "off",
+      // Off, and not as a shortcut. It fires on fetch-on-mount, which is how
+      // every screen here loads its data, and the rule's own fix is a data
+      // layer this app does not have. It is a performance advisory, not a
+      // correctness one. The rules that catch bugs, rules-of-hooks and
+      // exhaustive-deps, stay on.
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
+);
